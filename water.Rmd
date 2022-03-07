@@ -1,0 +1,417 @@
+---
+title: "Water"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(data.table)
+library(RMySQL)
+library(plotly)
+library(maptools)
+library(dplyr)
+```
+
+
+```{r}
+dbConn <- dbConnect(RSQLite::SQLite(), "../data/ifadeokenya_db.db")
+Uppertana_surv <- dbReadTable(dbConn, name = "UTANRMPSurvey") # Get UTanrm survey data
+Mpat_surv <- dbReadTable(dbConn, name = "Mpat_unwf") # MPAT survey data
+
+```
+
+```{r}
+# Number of households surveyed per County for Upper Tana project
+hhsurveyed.UTanrm <- Uppertana_surv %>%
+  dplyr::group_by(County) %>%
+  dplyr::count() %>%
+  dplyr::rename(hhsurveyed.utanrm=n)
+
+
+##** Add county and sub-county columns in mpat data----
+county <- readShapePoly("../data/shp/sub-counties.shp")
+Mpat_surv.sp <- SpatialPointsDataFrame(Mpat_surv, coords = Mpat_surv[, c(2:3)])
+# Mpat_surv.sp<-sf::st_as_sf(Mpat_surv,coords = Mpat_surv[,c(2:3)])
+county.mpat <- over(Mpat_surv.sp, county)
+Mpat_surv <- cbind(county.mpat[, c(8, 3)], Mpat_surv)
+colnames(Mpat_surv)[1:2] <- c("County", "Subcounty")
+Mpat_surv <- Mpat_surv[, c(3:5, 1:2, 6:41)]
+
+
+# Number of households surveyed per County for MPAT project
+hhsurveyed.mpat <- Mpat_surv %>%
+  dplyr::group_by(County) %>%
+  dplyr::count() %>%
+  dplyr::rename(hhsurveyed.mpat=n)
+
+
+```
+
+# Project impact on water source
+## Water source before and after the inception of UTanrm
+```{r}
+
+## Water access----
+water.utacc <- subset(Uppertana_surv, select = c(4:7, 12, 69:75))
+
+water.utacc$project <- "utanrm"
+
+water.utacc <- water.utacc %>% dplyr::full_join(hhsurveyed.UTanrm)
+
+# There are 1006 observations before cleaning
+
+## water source impact----
+water.imp.UTanrm <- water.utacc[c("County","Waterbfr2012","Wateraft2012","hhsurveyed.utanrm")]
+
+water.imp.UTanrm <- water.imp.UTanrm[!(is.na(water.imp.UTanrm$Waterbfr2012) | water.imp.UTanrm$Waterbfr2012 == ""), ]
+water.imp.UTanrm <- water.imp.UTanrm[!(is.na(water.imp.UTanrm$Wateraft2012) | water.imp.UTanrm$Wateraft2012 == ""), ]
+
+water.imp.UTanrm <- water.imp.UTanrm[water.imp$County != "", ]
+
+water.imp.UTanrm$Wateraft2012[water.imp.UTanrm$Wateraft2012 == "Piped Water Into House"] <- "Piped water"
+water.imp.UTanrm$Waterbfr2012[water.imp.UTanrm$Waterbfr2012 == "Piped Water Into House"] <- "Piped water"
+
+
+#dbWriteTable(dbConn, "UTanrm_waterimpact",water.imp.UTanrm,overwrite=TRUE)
+```
+
+# Water source and water quality : UTanrm & MPAT
+Both projects conducted surveys on water sources and quality; we will therefore need to harmonize the overlaps for the counties where both projects were conducted
+
+```{r}
+
+water.mpatacc <- subset(Mpat_surv, select = c(4:7, 21:34))
+water.mpatacc$project <- "mpat"
+
+###** Harmonizing mpat and UTaNRMP water access water----
+#colnames(water.mpatacc)[c("Subcounty","sizehh","watersource.overall","water.quality" )] <- c("SubCounty", "SizeHH", "Watersource", "Waterquality")
+water.mpatacc <- setDT(water.mpatacc)
+water.mpatacc <- setnames(water.mpatacc,c("Subcounty","sizehh","watersource.overall","water.quality" ),c("SubCounty", "SizeHH", "Watersource", "Waterquality"))
+water.utacc <- setnames(water.utacc,c("Wateraft2012","Qualitywater"),c("Watersource", "Waterquality"))
+
+#colnames(water.utacc)[c("Wateraft2012","Qualitywater")] <- c("Watersource", "Waterquality")
+
+water.utacc <- water.utacc[!apply(water.utacc == "", 1, all), ] ## remove blank rows
+
+water.utacc <- setDT(water.utacc)
+water.mpatacc <- setDT(water.mpatacc)
+
+water.acc.UtanrmMpat$County[water.acc.UtanrmMpat$County == "Murang'a"] <- "Muranga"
+
+water.mpatacc <- merge.data.table(water.mpatacc, hhsurveyed.mpat)
+
+#water.acc.UtanrmMpat <- data.table::merge.data.table(water.utacc,water.mpatacc,by=c("County","SubCounty","Watersource","Waterquality","project","SizeHH"),all = TRUE)
+
+water.acc.UtanrmMpat <- water.utacc %>% dplyr::full_join(water.mpatacc)
+
+water.acc.UtanrmMpat$County[water.acc.UtanrmMpat$County == "Murang'a"] <- "Muranga"
+
+dbWriteTable(dbConn,"water.acc.UtanrmMpat",water.acc.UtanrmMpat, overwrite=TRUE)
+
+```
+
+
+# Water source both : data transformations
+
+```{r}
+
+water.source <- water.acc.UtanrmMpat[,c("County","Watersource","project","hhsurveyed.utanrm","hhsurveyed.mpat")]
+
+water.source <- water.source[!(is.na(water.source$Watersource) | water.source$Watersource == "" | water.source$Watersource == "NA"), ]
+water.source <- water.source[!(is.na(water.source$County) | water.source$County == "" | water.source$County == "NA"), ]
+
+## harmonize water sources
+water.source$Watersource <- case_when(
+  water.source$Watersource == "Borehole(>20m deep)" ~ "Borehole",
+  water.source$Watersource == "Closed rainwater container" ~ "Stored Rainwater",
+  water.source$Watersource == "Open rainwater container" ~ "Stored Rainwater",
+  water.source$Watersource == "Rain Water" ~ "Stored Rainwater",
+  water.source$Watersource == "Communal well(>20m deep)" ~ "Communal well",
+  water.source$Watersource == "Communal well(<20m deep)" ~ "Communal well",
+ water.source$Watersource == "Private well(<20m deep)" ~ "Private well",
+  water.source$Watersource == "Private well(>20m deep)" ~ "Private well",
+  water.source$Watersource == "Unprotected spring" ~ "Unprotected Spring",
+  water.source$Watersource == "Protected spring" ~ "Protected Spring",
+  water.source$Watersource == "Non-chlorinated piped water" ~ "Piped water",
+  water.source$Watersource == "Piped Water Into House" ~ "Piped water",
+  water.source$Watersource == "Piped chlorinated water" ~ "Piped water",
+  water.source$Watersource == "River" ~ "River/Stream",
+  water.source$Watersource == "Stream" ~ "River/Stream",
+  water.source$Watersource == "Large dam" ~ "Dam",
+  water.source$Watersource == "Small dam" ~ "Dam",
+  water.source$Watersource == "Water vendor" ~ "Others",
+  water.source$Watersource == "Water Pans" ~ "Others",
+  TRUE ~ water.source$Watersource
+)
+
+
+dbWriteTable(dbConn,"UTanrm_mpat_watersource",water.source,overwrite=TRUE)
+
+```
+
+# Water source : UTanrm
+```{r}
+
+watersrc.utanrm <- setDT(water.source)[project=="utanrm",.(hhcount=.N,hhsurveyed.utanrm), by=.(County,Watersource)][,
+                                                                                                         .(percentage.hh=round(hhcount/hhsurveyed.utanrm*100,0)),by=.(County,Watersource)]
+
+plot_ly(unique(watersrc.utanrm),
+            x = ~County,
+            y = ~percentage.hh,
+            color = ~Watersource,
+            type = "bar") %>%
+      layout(barmode = "group",
+             title = "Water sources and percentage reliant households",
+             legend=list(title=list(text='<b> Water source  </b>')),
+             yaxis = list(title = "Percentage households", ticksuffix = "%"))
+    
+```
+
+
+# Water source: mpat
+```{r}
+watersource.mpat <- setDT(water.source)[project=="mpat",.(hhcount=.N,hhsurveyed.mpat), by=.(County,Watersource)][,
+                                                                                                         .(percentage.hh=round(hhcount/hhsurveyed.mpat*100,0)),by=.(County,Watersource)]
+
+plot_ly(unique(watersource.mpat),
+            x = ~County,
+            y = ~percentage.hh,
+            color = ~Watersource,
+            type = "bar") %>%
+      layout(barmode = "group",
+             title = "Water sources and percentage reliant households",
+             legend=list(title=list(text='<b> Water source  </b>')),
+             yaxis = list(title = "Percentage households", ticksuffix = "%"))
+```
+
+
+
+# Water quality utanrmm
+
+```{r}
+
+water.quality <- water.acc.UtanrmMpat[,c("County","Waterquality","project","hhsurveyed.utanrm","hhsurveyed.mpat")]
+
+#dbWriteTable(dbConn,"UTanrm_mpat_waterquality",water.quality,overwrite=TRUE)
+
+waterquality.utanrm <- setDT(water.quality)[project =="utanrm" & County !="",.(hhcount=.N, hhsurveyed.utanrm),by=.(County,Waterquality)][
+  ,.(percentage.hh=round(hhcount/hhsurveyed.utanrm*100)),by=.(County,Waterquality)]
+
+ plot_ly(unique(waterquality.utanrm),x = ~County,
+              y = ~percentage.hh,
+              color =  ~Waterquality,
+              colors = "Set2",
+              type = "bar"
+              ) %>%
+      plotly::layout(barmode = "stack",
+             title = "Water quality",
+             legend=list(title=list(text='<b> Quality rating </b>')),
+             yaxis = list(title = "Percentage number of households",ticksuffix = "%"))
+```
+
+
+# Water quality mpat
+```{r}
+waterquality.mpat <- setDT(water.quality)[c(project =="mpat" & County !=""),.(hhcount=.N, hhsurveyed.mpat),by=.(County,Waterquality)][
+  ,.(percentage.hh=round(hhcount/hhsurveyed.mpat*100)),by=.(County,Waterquality)]
+
+ plot_ly(unique(waterquality.mpat),x = ~County,
+              y = ~percentage.hh,
+              color =  ~Waterquality,
+              colors = "Set2",
+              type = "bar"
+              ) %>%
+      plotly::layout(barmode = "stack",
+             title = "Water quality",
+             legend=list(title=list(text='<b> Quality rating </b>')),
+             yaxis = list(title = "Percentage number of households",ticksuffix = "%"))
+```
+
+
+
+# Water storage : utanrm
+```{r}
+
+##** water storage----
+waterstorage.utanrm <- setDT(water.acc.UtanrmMpat)[!(County == "" | Waterstorage == ""), c("County","Waterstorage","hhsurveyed.utanrm")] #%>%
+
+# Export table into database
+dbWriteTable(dbConn,"UTanrm_waterstorage",waterstorage.utanrm, overwrite=TRUE)
+
+waterstorage <- waterstorage.utanrm[,.(hhcount=.N, hhsurveyed.utanrm = hhsurveyed.utanrm),by=.(County,Waterstorage)][
+  ,.(percentage.hh=round(hhcount/hhsurveyed.utanrm*100,0)),by=.(County,Waterstorage)
+]
+
+ plot_ly(unique(waterstorage),x = ~County,
+              y = ~percentage.hh,
+              color = ~Waterstorage,
+              colors = "Dark2",
+              type = "bar") %>%
+      layout(title = "Water storage methods in surveyed households",
+             legend=list(title=list(text='<b> Storage method </b>')),
+             yaxis = list(title = "Percentage number of households",ticksuffix = "%")
+             )
+```
+
+```{r}
+
+
+  # Water submodule----
+  ## MPAT survey data----
+  Mpat_surv <- dbReadTable(dbConn, name = "Mpat_unwf")
+  utanrm_water_src <- dbReadTable(dbConn, name = "UTanrm_mpat_watersource")
+  water.imp <- dbReadTable(dbConn, name = "UTanrm_mpat_waterimpact")
+ 
+  water.quality <- dbReadTable(dbConn, name = "UTanrm_mpat_waterquality")
+  water.store <- dbReadTable(dbConn, name = "UTanrm_waterstorage")
+  timetowater <- dbReadTable(dbConn, name = "UTanrm_mpat_timetowater")
+  
+  ##** Months of sufficient water----
+  mpat.suff <- Mpat_surv[, c(2:4, 26)]
+  mpat.suff$mnths.suffwater <- as.numeric(mpat.suff$mnths.suffwater)
+  
+```
+
+
+# Time to water: Both projects conducted a survey on this
+
+```{r}
+Nrm.time <- Uppertana_surv[, c(4, 72)]
+Nrm.time <- Nrm.time[!(Nrm.time$Timetogetwater == "" | Nrm.time$County == ""), ]
+
+mpat.time <- Mpat_surv[, c(4, 26)]
+mpat.time <- mpat.time[!(mpat.time$Minutes.overall == "NA"), ]
+
+
+mpat.time$Minutes.overall <- as.numeric(mpat.time$Minutes.overall)
+
+## categorize minutes to water
+
+mpat.time$time_category[mpat.time$Minutes.overall <= 15] <- "Less Than 15mins"
+mpat.time$time_category[mpat.time$Minutes.overall >= 15 & mpat.time$Minutes.overall <= 30] <- "15-30mins"
+mpat.time$time_category[mpat.time$Minutes.overall >= 31 & mpat.time$Minutes.overall <= 60] <- "31mins -1 Hr"
+mpat.time$time_category[mpat.time$Minutes.overall >= 61] <- "More Than 1hr"
+mpat.time <- mpat.time[, -2]
+
+## merge mpat amd NRMP time to get water data
+colnames(Nrm.time) <- c("County", "Time")
+colnames(mpat.time) <- c("County", "Time")
+
+Nrm.time$project <- "utanrm"
+mpat.time$project <- "mpat"
+
+timetowater <- rbind(Nrm.time, mpat.time)
+timetowater <- dplyr::full_join(timetowater,hhsurveyed.mpat)
+timetowater <- dplyr::full_join(timetowater, hhsurveyed.UTanrm)
+
+timetowater$County[timetowater$County == "Murang'a"] <- "Muranga"
+
+UTanrm_mpat_timetowater <- setDT(timetowater)[County != "NA"]
+
+# timetowater <- timetowater %>%
+#   dplyr::filter(County!="NA") %>%
+#   dplyr::group_by(County, Time,project,hhsurveyed.mpat, hhsurveyed.utanrm) %>%
+#   dplyr::summarise(Count = n())
+
+
+
+#dbWriteTable(dbConn,"UTanrm_mpat_timetowater",UTanrm_mpat_timetowater,overwrite=TRUE)
+
+```
+# Time to water : UTANRM
+
+```{r}
+utanrm_timetowater <- UTanrm_mpat_timetowater[project == "utanrm",.(hhcount =.N, hhsurveyed.utanrm),
+                                              by=.(Time,County)][,.(percentage.hh=round(hhcount/hhsurveyed.utanrm*100,0)),by=.(County,Time)]
+
+
+plot_ly(unique(utanrm_timetowater),
+        x = ~County,
+        y = ~percentage.hh,
+        color = ~Time,
+        type = "bar") %>%
+  layout(
+    barmode = "group",
+    title = "Time taken by households to access water",
+             legend=list(title=list(text='<b> Time </b>')),
+             yaxis = list(title = "Percentage number of households",ticksuffix = "%")
+    
+  )
+```
+
+
+# Time to water : MPAT
+
+```{r}
+mpat_timetowater <- UTanrm_mpat_timetowater[project == "mpat",.(hhcount =.N, hhsurveyed.mpat),
+                                              by=.(Time,County)][,.(percentage.hh=round(hhcount/hhsurveyed.mpat*100,0)),by=.(County,Time)]
+
+
+plot_ly(unique(mpat_timetowater),
+        x = ~County,
+        y = ~percentage.hh,
+        color = ~Time,
+        type = "bar") %>%
+  layout(
+    barmode = "group",
+    title = "Time taken by households to access water",
+             legend=list(title=list(text='<b> Time </b>')),
+             yaxis = list(title = "Percentage number of households",ticksuffix = "%")
+    
+  )
+```
+
+
+
+# water source change
+```{r}
+ 
+    
+before <- data.table::setDT(water.imp)[project=="utanrm",.(count = .N), by = .(County,Waterbfr2012,households_surveyed)][,.(proportion = round(count/households_surveyed * 100,1)),by = .(County,Waterbfr2012)]
+    
+    colnames(before) <- c("source","target","value")
+    
+    before$target <- paste(before$target,"",sep = "")
+    
+    nodes <- data.frame(name=c(as.character(before$source), as.character(before$target)) %>% unique())
+    
+    
+    before$IDsource = match(before$source, nodes$name)-1
+    before$IDtarget = match(before$target, nodes$name)-1
+    
+    
+    plot_ly(
+      type = "sankey",
+      node = list(
+        label = nodes$name,
+        pad = 15,
+        thickness = 15,
+        line = list(
+          color = "black",
+          width = 0.5
+        )
+      ),
+      
+      link = list(
+        source = before$IDsource,
+        target = before$IDtarget,
+        value =  before$value,
+        label = nodes$name
+      )
+    )  %>%
+      layout(
+        title = "Water source before Inception of UTaNRMP",
+        #font = f.b,
+        xaxis = list(showgrid = F, zeroline = F),
+        yaxis = list(showgrid = F, zeroline = F),
+        margin = list( t = 50)#,
+        # plot_bgcolor  = "rgba(0, 0, 0, 0)",
+        # paper_bgcolor = "rgba(0, 0, 0, 0)"
+      ) 
+```
+
+
+
+
