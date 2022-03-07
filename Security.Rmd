@@ -1,0 +1,101 @@
+---
+title: "Security"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+
+# Security
+## Human wildlife conflict
+
+```{r}
+hum.wild <- data.table(dbReadTable(dbConn, name = "UTanrm_security_hwildlife"))
+wild.cases <- dbReadTable(dbConn, name = "UTanrm_security_wildcases")
+ani.conflict <- dbReadTable(dbConn, name = "UTanrm_security_anconflict")
+```
+
+
+```{r}
+ hum.wild<-hum.wild[!hum.wild$County=="",]
+      hum.wild<-hum.wild[!hum.wild$Humanwildlife=="",]
+      
+      t<-table(hum.wild$County,hum.wild$Humanwildlife)
+      t<-prop.table(t,1)%>%data.frame()
+      t$Var2<-as.character(t$Var2)
+      t<-t%>%mutate(Perc=round(Freq*100,2))
+      t$Var2[t$Var2=="No"]<-"No incidents"
+      t$Var2[t$Var2=="Yes"]<-"Incidents"
+      
+      names(t)[1:2]<-c("County","Incident")
+      t<-t[,-c(3)]
+      
+      
+      incidents.data <- data.table::setDT(hum.wild)[!County == "" & !Humanwildlife=="",.(count = .N, Humanwildlife = Humanwildlife), 
+                                                    by = .(County)][,.(total.count = sum(count),count=count,Humanwildlife = Humanwildlife), 
+                                                                    by =.(County)][,.(Perc = round(count/total.count*100,0)),by=.(County,Humanwildlife)]
+      
+      # ggplot(t)+
+      #   geom_bar(aes(x=County,y=Perc,fill=Incident),stat="identity",position="stack")+
+      #   theme(legend.title = element_blank(),
+      #         axis.text = element_text(size=14,face="bold"),
+      #         axis.title = element_text(size=16,face="bold"),
+      #         legend.position = "bottom",
+      #         axis.text.x = element_text(angle=45,vjust=0.9,hjust = 0.9),
+      #         legend.text = element_text(size=14))+
+      #   scale_fill_brewer(name="",palette="Set3")+
+      #   ggplot2::scale_y_continuous(labels = scales::number_format(accuracy = 1,scale = 1,suffix = "%")) +
+      #   labs(x="County",y="Percentage") +
+      #   theme_dark()
+      
+      
+      plot_ly(t,
+              x = ~County,
+              y = ~Perc,
+              color = ~Incident,
+              type = "bar") %>%
+        layout(barmode = "stack",
+               yaxis = list(title = "Percentage number of incidents", ticksuffix = "%"))
+```
+
+
+# Type of conflict
+```{r}
+
+type <- data.table::setDT(wild.cases)[,c(1:3,5,7,8:10)][,.(count = .N), by = .(County,Typeconflct)]
+      
+    type<-type[!(type$Typeconflct=="" | type$Typeconflct=="Others"),]
+    
+    type$Typeconflct[type$Typeconflct=="Destruction Of Livestock"]<-"Death of Livestock"
+    
+    ggplot(type) +
+      geom_bar(aes(x=County,y=count,fill=Typeconflct),position="dodge",stat="identity")+
+      labs(y="Number of cases")+
+      scale_fill_brewer(name="",palette="Set1")+
+      scale_y_continuous(breaks=pretty_breaks(6),labels = scales::number_format(accuracy = 1,scale = 1,suffix = "%"))+
+      ggtitle(paste0("Types of conflicts and frequency of","\n"," occurence for surveyed counties"))+
+      theme(plot.title = element_text(size=18,hjust=0.5,face="bold"),
+            legend.position = "bottom",
+            axis.text.x = element_text(angle = 45,vjust=0.9,hjust=0.9),
+            legend.text = element_text(size=12),
+            axis.title = element_text(size=16,face="bold"),
+            axis.text = element_text(size=14,face="bold"))+
+      guides(fill=guide_legend(nrow=2)) +
+      theme_dark()
+    
+    
+    plot_ly(type,
+            x = ~reorder(County,-count),
+            y = ~count,
+            color = ~Typeconflct,
+            type = "bar") %>%
+      layout(barmode = "group",
+             yaxis = list(title = "Number of cases"),
+             legend = list(title=list(text='<b> Type of conflict  </b>')),
+             xaxis = list(title = "County"),
+             title = paste0("Types of conflicts and frequency of","\n"," occurance for surveyed counties"))
+    
+    
+```
+
